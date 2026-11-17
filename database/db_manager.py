@@ -23,9 +23,14 @@ def init_db() -> None:
                                                     priority TEXT NOT NULL,
                                                     created_at TEXT NOT NULL,
                                                     updated_at TEXT NOT NULL,
-                                                    lang TEXT NOT NULL
+                                                    lang TEXT NOT NULL,
+                                                    label TEXT
                )"""
         )
+        # Migracja dla baz utworzonych bez label.
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+        if "label" not in columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN label TEXT")
 
 
 def add_task(
@@ -33,14 +38,19 @@ def add_task(
     relation: Optional[str] = None,
     priority: TaskPriority = TaskPriority.NORMAL,
     lang: TaskLang = TaskLang.PL,
+    label: Optional[str] = None,
 ) -> Task:
     task = Task(
-        description=description, relation=relation, priority=priority, lang=lang
+        description=description,
+        relation=relation,
+        priority=priority,
+        lang=lang,
+        label=label,
     )
 
     with _get_conn() as conn:
         conn.execute(
-            "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 task.id,
                 task.description,
@@ -50,6 +60,7 @@ def add_task(
                 task.created_at,
                 task.updated_at,
                 task.lang,
+                task.label,
             ),
         )
     return task
@@ -62,6 +73,16 @@ def get_all_tasks() -> list[Task]:
         return [Task(**dict(row)) for row in rows]
 
 
+def get_labeled_tasks() -> list[Task]:
+    """Zadania z nadaną etykietą klasy."""
+    with _get_conn() as conn:
+        cursor = conn.execute(
+            "SELECT * FROM tasks WHERE label IS NOT NULL AND label != '' ORDER BY created_at DESC"
+        )
+        rows = cursor.fetchall()
+        return [Task(**dict(row)) for row in rows]
+
+
 def get_task_by_id(task_id: str) -> Optional[Task]:
     with _get_conn() as conn:
         cursor = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
@@ -69,6 +90,23 @@ def get_task_by_id(task_id: str) -> Optional[Task]:
         if row:
             return Task(**dict(row))
         return None
+
+
+def set_task_label(task_id: str, label: Optional[str]) -> Optional[Task]:
+    """Nadaje/nadpisuje etykietę klasy"""
+    task = get_task_by_id(task_id)
+    if not task:
+        return None
+
+    task.label = label or None
+    task.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE tasks SET label = ?, updated_at = ? WHERE id = ?",
+            (task.label, task.updated_at, task.id),
+        )
+    return task
 
 
 def update_task(

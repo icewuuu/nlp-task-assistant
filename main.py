@@ -10,6 +10,11 @@ from bot.handlers import (
     update_command,
     delete_command,
     task_command,
+    prepare_data_for_classification_command,
+    classifier_command,
+    evaluate_command,
+    validate_command,
+    label_command,
 )
 
 logging.basicConfig(
@@ -38,6 +43,16 @@ def main():
     application.add_handler(CommandHandler("update", update_command))
     application.add_handler(CommandHandler("delete", delete_command))
     application.add_handler(CommandHandler("task", task_command))
+
+    application.add_handler(
+        CommandHandler(
+            "prepare_data_for_classification", prepare_data_for_classification_command
+        )
+    )
+    application.add_handler(CommandHandler("classifier", classifier_command))
+    application.add_handler(CommandHandler("evaluate", evaluate_command))
+    application.add_handler(CommandHandler("validate", validate_command))
+    application.add_handler(CommandHandler("label", label_command))
 
     logger.info("Uruchamianie bota...")
     application.run_polling()

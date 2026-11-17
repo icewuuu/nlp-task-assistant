@@ -223,3 +223,7 @@ __marimo__/
 .venv/
 __pycache__/
 
+.idea/
+
+# Wytrenowane modele klasyfikacji (Zadanie 2)
+models/

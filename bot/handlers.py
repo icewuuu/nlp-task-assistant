@@ -17,8 +17,49 @@ from nlp import (
     get_bow,
     get_tfidf,
 )
+from nlp.classify_data import (
+    get_labeled_corpus,
+    label_todo_tasks,
+    load_ag_news,
+)
+from nlp.classify_train import (
+    CLASS_METHODS,
+    REPR_METHODS,
+    build_all_matrices_report,
+    evaluate_model,
+    predict_text,
+    train_all_configs,
+)
+
+
+def _chunk_text(text: str, max_len: int = 3500) -> list[str]:
+    """Telegram ucina długie wiadomości, więc dzielę na kawałki."""
+    if len(text) <= max_len:
+        return [text]
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in text.splitlines(keepends=True):
+        if current_len + len(line) > max_len and current:
+            chunks.append("".join(current))
+            current = [line]
+            current_len = len(line)
+        else:
+            current.append(line)
+            current_len += len(line)
+    if current:
+        chunks.append("".join(current))
+    return chunks
 
 CLEAR_RELATION_VALUES = {"none", "null", "clear", "-", "usunąć", "usuń"}
+
+VALIDATION_SENTENCES = [
+    ("Olympic athletes win gold medals in swimming finals", "Sports"),
+    ("Central bank raises interest rates amid inflation fears", "Business"),
+    ("Astronomers discover a new exoplanet near a red dwarf", "Sci/Tech"),
+    ("Diplomats meet to discuss ceasefire in the region", "World"),
+]
 
 
 def _parse_add_args(args: list[str]) -> tuple[str, str | None]:
@@ -43,7 +84,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     help_text = (
         "Witaj w systemie TODO z silnikiem NLP.\n\n"
-        "Dostępne komendy:\n"
+        "Komendy TODO:\n"
         "/add <opis> [--relation <id>] - dodaje nowe zadanie\n"
         "/tasks - wyświetla listę zadań\n"
         "/update <id> <nowy_opis> - aktualizuje treść zadania\n"
@@ -51,8 +92,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "/update <id> relation <id|none> - ustawia/czyści relację\n"
         "/delete <id> - usuwa zadanie\n"
         f"/task <id> <operacja> - uruchamia analizę NLP na zadaniu\n\n"
-        "Dostępne operacje NLP: clean, normalize, tokenize, stopwords, "
-        f"lemmatize, stem, unigram, bigram, trigram, 6gram, bow, tfidf"
+        "Operacje NLP: clean, normalize, tokenize, stopwords, "
+        f"lemmatize, stem, unigram, bigram, trigram, 6gram, bow, tfidf\n\n"
+        "Klasyfikacja:\n"
+        "/prepare_data_for_classification [agnews|todo]\n"
+        "/classifier cleaning \"tekst\" <bow|tfidf|embedding> <logreg|mlp>\n"
+        "/evaluate <repr> <method>  (albo: all)\n"
+        "/validate [repr] [method]\n"
+        "/label <id> <klasa>"
     )
     await update.message.reply_text(help_text)
 
@@ -260,3 +307,231 @@ async def task_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     response_msg = formatters.format_nlp_result(operation, result, original_text)
     await update.message.reply_html(response_msg)
+
+
+def _parse_classifier_args(args: list[str]) -> tuple[str, str, str]:
+    """
+    /classifier cleaning <tekst...> <method_repr> <method_class>
+    Tekst może być w cudzysłowach Telegram i tak dzieli po spacjach.
+    """
+    if len(args) < 4:
+        raise ValueError(
+            "Użyj: /classifier cleaning \"tekst\" <bow|tfidf|embedding> <logreg|mlp>"
+        )
+
+    if args[0].lower() != "cleaning":
+        raise ValueError(
+            "Parametr cleaning jest obowiązkowy, np.:\n"
+            "/classifier cleaning \"Stock markets rose\" tfidf mlp"
+        )
+
+    method_repr = args[-2].lower()
+    method_class = args[-1].lower()
+    text = " ".join(args[1:-2]).strip().strip('"').strip("'")
+
+    if not text:
+        raise ValueError("Podaj niepusty tekst do sklasyfikowania.")
+    if method_repr not in REPR_METHODS:
+        raise ValueError(f"Nieznana reprezentacja. Dostępne: {', '.join(REPR_METHODS)}")
+    if method_class not in CLASS_METHODS:
+        raise ValueError(f"Nieznana metoda. Dostępne: {', '.join(CLASS_METHODS)}")
+
+    return text, method_repr, method_class
+
+
+async def prepare_data_for_classification_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """/prepare_data_for_classification [agnews|todo]"""
+    source = "agnews"
+    if context.args:
+        source = context.args[0].lower().replace("-", "").replace("_", "")
+        if source in {"agnews", "ag", "agnew"}:
+            source = "agnews"
+        elif source in {"todo", "tasks", "local"}:
+            source = "todo"
+        else:
+            await update.message.reply_text(
+                "Nie znam tego źródła. Użyj agnews albo todo."
+            )
+            return
+
+    await update.message.reply_text(
+        f"Biorę dane ({source}) i trenuję 6 modeli, chwila..."
+    )
+
+    try:
+        if source == "agnews":
+            texts, labels = load_ag_news()
+            classes = sorted(set(labels))
+            info = (
+                f"AG News: {len(texts)} przykładów. "
+                f"Classes: {', '.join(classes)}"
+            )
+        else:
+            summary = label_todo_tasks(overwrite=True)
+            texts, labels = get_labeled_corpus()
+            if len(texts) < 4:
+                await update.message.reply_text(
+                    "Za mało oznaczonych zadań. Dodaj więcej (/add) "
+                    "albo odpal agnews."
+                )
+                return
+            info = (
+                f"Labels assigned to {summary['labeled']} tasks. "
+                f"Classes: {', '.join(summary['classes'])}"
+            )
+
+        report = train_all_configs(texts, labels, clean=True)
+        await update.message.reply_text(info)
+        await update.message.reply_text(report["table"])
+        # telegram ma limit długości wiadomości
+        for i, chunk in enumerate(_chunk_text(report["matrices"]), start=1):
+            header = f"(macierze cz. {i})\n" if i > 1 else ""
+            await update.message.reply_text(header + chunk)
+    except Exception as exc:
+        await update.message.reply_text(f"Błąd przygotowania/treningu: {exc}")
+
+
+async def classifier_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/classifier cleaning \"tekst\" <repr> <method>"""
+    try:
+        text, method_repr, method_class = _parse_classifier_args(context.args or [])
+    except ValueError as exc:
+        await update.message.reply_text(str(exc))
+        return
+
+    try:
+        result = predict_text(
+            text, method_repr, method_class, use_cleaning=True
+        )
+        await update.message.reply_text(formatters.format_prediction(result))
+    except FileNotFoundError as exc:
+        await update.message.reply_text(str(exc))
+    except Exception as exc:
+        await update.message.reply_text(f"Błąd klasyfikacji: {exc}")
+
+
+async def evaluate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/evaluate <repr> <method>  albo  /evaluate all"""
+    if not context.args:
+        await update.message.reply_text(
+            "Użyj:\n"
+            "/evaluate <bow|tfidf|embedding> <logreg|mlp>\n"
+            "/evaluate all"
+        )
+        return
+
+    if context.args[0].lower() == "all":
+        try:
+            report = build_all_matrices_report()
+            for i, chunk in enumerate(_chunk_text(report), start=1):
+                header = f"(macierze cz. {i})\n" if i > 1 else ""
+                await update.message.reply_text(header + chunk)
+        except FileNotFoundError as exc:
+            await update.message.reply_text(str(exc))
+        except Exception as exc:
+            await update.message.reply_text(f"Błąd ewaluacji: {exc}")
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Użyj: /evaluate <bow|tfidf|embedding> <logreg|mlp>\n"
+            "lub: /evaluate all"
+        )
+        return
+
+    method_repr = context.args[0].lower()
+    method_class = context.args[1].lower()
+
+    if method_repr not in REPR_METHODS or method_class not in CLASS_METHODS:
+        await update.message.reply_text(
+            f"Dostępne repr: {', '.join(REPR_METHODS)}\n"
+            f"Dostępne method: {', '.join(CLASS_METHODS)}\n"
+            "Zbiorczo: /evaluate all"
+        )
+        return
+
+    try:
+        metrics = evaluate_model(method_repr, method_class)
+        await update.message.reply_html(
+            formatters.format_evaluation(method_repr, method_class, metrics)
+        )
+    except FileNotFoundError as exc:
+        await update.message.reply_text(str(exc))
+    except Exception as exc:
+        await update.message.reply_text(f"Błąd ewaluacji: {exc}")
+
+
+async def validate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/validate [repr] [method] – test na moich zdaniach spoza zbioru"""
+    method_repr = "tfidf"
+    method_class = "logreg"
+    if len(context.args) >= 2:
+        method_repr = context.args[0].lower()
+        method_class = context.args[1].lower()
+
+    lines = [
+        f"Walidacja spoza zbioru | {method_repr} + {method_class}",
+        "",
+    ]
+    ok = 0
+    try:
+        for sentence, expected in VALIDATION_SENTENCES:
+            result = predict_text(
+                sentence, method_repr, method_class, use_cleaning=True
+            )
+            predicted = result["label"]
+            hit = predicted == expected
+            if hit:
+                ok += 1
+            mark = "OK" if hit else "MISS"
+            p = result.get("probability")
+            p_txt = f" p={p:.2f}" if p is not None else ""
+            lines.append(
+                f"[{mark}] expected={expected} pred={predicted}{p_txt}\n"
+                f"  \"{sentence}\""
+            )
+
+        lines.append("")
+        lines.append(
+            f"Trafienia: {ok}/{len(VALIDATION_SENTENCES)} "
+            "(zdania własne, nie z train)."
+        )
+        if ok == len(VALIDATION_SENTENCES):
+            lines.append("Komentarz: na tych przykładach trafiliśmy wszystko.")
+        elif ok >= 2:
+            lines.append(
+                "Komentarz: kilka pomyłek – przy krótkich zdaniach klasy "
+                "się trochę mieszają (np. World vs Sci/Tech)."
+            )
+        else:
+            lines.append(
+                "Komentarz: słabo. Lepiej spróbować embedding albo inny classifier."
+            )
+        await update.message.reply_text("\n".join(lines))
+    except FileNotFoundError as exc:
+        await update.message.reply_text(str(exc))
+    except Exception as exc:
+        await update.message.reply_text(f"Błąd walidacji: {exc}")
+
+
+async def label_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/label <id> <klasa> — ręczna etykieta zadania TODO."""
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Użyj: /label <id_zadania> <klasa>\n"
+            "Np. /label 1234-abcd nauka"
+        )
+        return
+
+    task_id = context.args[0]
+    label = " ".join(context.args[1:]).strip()
+    task = db_manager.set_task_label(task_id, label)
+    if not task:
+        await update.message.reply_text("Nie znaleziono zadania o podanym ID.")
+        return
+
+    await update.message.reply_text(
+        f"Ustawiono label=\"{label}\" dla zadania:\n{task.description}"
+    )
