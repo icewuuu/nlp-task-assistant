@@ -9,3 +9,7 @@ SPACY_MODEL_PL = "pl_core_news_sm"
 DEFAULT_LANG = "pl"
 
 INDIVIDUAL_NGRAM = 6
+
+MODELS_DIR = "models"
+RANDOM_STATE = 42
+AG_NEWS_PER_CLASS = 2000

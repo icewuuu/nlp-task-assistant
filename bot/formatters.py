@@ -14,7 +14,7 @@ PRIORITY_TEXT = {
 
 
 def format_task(task: Task) -> str:
-    """Formatuje pojedyncze zadanie do wysłania na Telegramie (HTML)."""
+    """Formatuje pojedyncze zadanie do wysłania na Telegramie."""
 
     status_text = STATUS_TEXT.get(task.status, "NIEZNANY")
     priority_text = PRIORITY_TEXT.get(task.priority, "NIEZNANY")
@@ -28,6 +28,8 @@ def format_task(task: Task) -> str:
     )
     if task.relation:
         msg += f"\n<b>Powiązane z:</b> <code>{task.relation}</code>"
+    if task.label:
+        msg += f"\n<b>Label:</b> {task.label}"
 
     return msg
 
@@ -46,6 +48,32 @@ def format_task_list(tasks: list[Task]) -> str:
         )
 
     return "\n".join(lines)
+
+
+def format_prediction(result: dict) -> str:
+    """Odpowiedź z /classifier."""
+    label = result["label"]
+    proba = result.get("probability")
+    if proba is not None:
+        pred_line = f"Predicted class: {label} (p={proba:.2f})"
+    else:
+        pred_line = f"Predicted class: {label}"
+
+    return (
+        f"{pred_line} | repr: {result['method_repr']} | "
+        f"method: {result['method_class']}"
+    )
+
+
+def format_evaluation(method_repr: str, method_class: str, metrics: dict) -> str:
+    """Odpowiedź z /evaluate."""
+    from nlp.classify_metrics import format_confusion_matrix
+
+    body = format_confusion_matrix(metrics)
+    return (
+        f"Ocena: repr={method_repr}, method={method_class}\n\n"
+        f"<pre>{body}</pre>"
+    )
 
 
 def format_nlp_result(operation_name: str, result, original_text: str) -> str:
